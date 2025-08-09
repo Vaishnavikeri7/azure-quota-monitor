@@ -1,9 +1,9 @@
 name: Azure Quota Monitor
 
 on:
-  workflow_dispatch:    # Run manually from GitHub Actions tab
+  workflow_dispatch:    # Run manually from Actions tab
   schedule:
-    - cron: "0 3 * * *"  # Runs daily at 3 AM UTC
+    - cron: "0 3 * * *"  # Daily at 3 AM UTC
 
 jobs:
   quota-check:
@@ -14,12 +14,69 @@ jobs:
 
       - name: Azure CLI - Device Code Login
         run: |
-          echo "Run this command in the terminal below to login:"
-          echo "az login --use-device-code"
-          echo "You will need to authenticate before continuing."
-          sleep 30  # Give time to log in
+          echo ">>> Authenticate with Azure CLI:"
+          echo "1. Open https://microsoft.com/devicelogin"
+          echo "2. Enter the code shown below."
+          az login --use-device-code
 
-      - name: Check Azure Quotas
+      - name: Get Subscription Info
         run: |
-          az account show
-          az vm list-usage --location eastus --output table
+          echo ">>> Current Subscription:"
+          az account show --output table
+
+      - name: Fetch Quotas for All Regions and Services
+        run: |
+          mkdir -p quota_results
+          subscriptionId=$(az account show --query id -o tsv)
+
+          echo ">>> Fetching Azure locations..."
+          locations=$(az account list-locations --query "[].name" -o tsv)
+
+          for loc in $locations; do
+            echo "=== $loc ==="
+
+            # Compute quotas
+            az vm list-usage --location $loc --subscription $subscriptionId --output json \
+              > quota_results/compute_${loc}.json
+
+            # Network quotas
+            az network list-usages --location $loc --subscription $subscriptionId --output json \
+              > quota_results/network_${loc}.json
+
+            # Storage quotas (not all regions return values)
+            az storage account list --subscription $subscriptionId --query "[].{name:name,location:primaryLocation}" -o json \
+              > quota_results/storage_${loc}.json
+          done
+
+      - name: Analyze Quotas and Alert if >80% Usage
+        run: |
+          echo ">>> Checking usage thresholds..."
+          python3 <<EOF
+import json, os, glob
+
+for file in glob.glob("quota_results/*.json"):
+    try:
+        data = json.load(open(file))
+    except:
+        continue
+    for item in data:
+        limit = item.get("limit") or item.get("limit", -1)
+        current = item.get("currentValue") or 0
+        name = item.get("name", {}).get("value", "Unknown")
+        if limit and limit > 0 and (current / limit) >= 0.8:
+            print(f"ALERT 🚨: {name} in {file} is {current}/{limit} ({(current/limit)*100:.1f}% used)")
+EOF
+
+      - name: Save Historical Data
+        run: |
+          timestamp=$(date +"%Y-%m-%d_%H-%M-%S")
+          tar -czf quota_${timestamp}.tar.gz quota_results
+          mv quota_${timestamp}.tar.gz quota_results.tar.gz
+
+      - name: Commit Results to Repo
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add quota_results.tar.gz
+          git commit -m "Quota data on $(date)"
+          git push
