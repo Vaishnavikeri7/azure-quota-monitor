@@ -1,1 +1,25 @@
-mkdir -p .github/workflows
+name: Azure Quota Monitor
+
+on:
+  workflow_dispatch:    # Run manually from GitHub Actions tab
+  schedule:
+    - cron: "0 3 * * *"  # Runs daily at 3 AM UTC
+
+jobs:
+  quota-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure CLI - Device Code Login
+        run: |
+          echo "Run this command in the terminal below to login:"
+          echo "az login --use-device-code"
+          echo "You will need to authenticate before continuing."
+          sleep 30  # Give time to log in
+
+      - name: Check Azure Quotas
+        run: |
+          az account show
+          az vm list-usage --location eastus --output table
